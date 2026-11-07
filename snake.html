@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>贪吃蛇</title>
+
+<!--
+  单文件贪吃蛇：HTML + CSS + JavaScript 全部在本文件里，不引用任何外部资源
+  （没有 CDN、没有网络字体、没有图片、没有构建步骤）。双击本文件即可离线游玩。
+-->
+
+<style>
+  /* ---------- 页面整体：深色底，内容垂直居中 ---------- */
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    background: radial-gradient(circle at 50% 0%, #1b2534 0%, #0a0e15 60%);
+    color: #e6edf3;
+    /* 只用系统字体，不下载网络字体 */
+    font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  h1 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: 6px;
+    color: #9fb3c8;
+  }
+
+  /* ---------- 顶部记分板：当前分数 + 最高分 ---------- */
+  .scores { display: flex; gap: 12px; }
+  .score {
+    min-width: 132px;
+    padding: 8px 14px 10px;
+    border-radius: 10px;
+    background: #121b27;
+    border: 1px solid #223046;
+    text-align: center;
+  }
+  .score .label {
+    display: block;
+    font-size: 12px;
+    letter-spacing: 3px;
+    color: #7d8ea3;
+  }
+  .score .value {
+    font-size: 26px;
+    line-height: 1.3;
+    font-variant-numeric: tabular-nums;
+  }
+  #highScore { color: #fbbf24; }
+
+  /* ---------- 棋盘区域：画布 + 盖在上面的提示层 ---------- */
+  .stage { position: relative; }
+  canvas {
+    display: block;
+    width: 400px;   /* 逻辑尺寸固定 400×400；高分屏下内部分辨率会放大，显示尺寸不变 */
+    height: 400px;
+    border-radius: 12px;
+    background: #0e1520;
+    box-shadow: 0 0 0 1px #223046, 0 18px 40px rgba(0, 0, 0, .45);
+  }
+  .overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border-radius: 12px;
+    background: rgba(7, 11, 17, .74);
+    text-align: center;
+  }
+  .overlay[hidden] { display: none; }
+  .overlay .title { font-size: 26px; letter-spacing: 4px; }
+  .overlay .sub { font-size: 13px; color: #93a5bb; }
+
+  /* ---------- 底部操作说明 ---------- */
+  .hint { margin: 0; font-size: 13px; color: #6f8096; }
+  kbd {
+    display: inline-block;
+    padding: 1px 6px;
+    margin: 0 2px;
+    border-radius: 5px;
+    background: #1b2634;
+    border: 1px solid #2b3b52;
+    color: #c3d2e2;
+    font: inherit;
+    font-size: 12px;
+  }
+</style>
+</head>
+
+<body>
+  <h1>贪吃蛇</h1>
+
+  <!-- 记分板：文字与需求一致，「当前分数」和「最高分」 -->
+  <div class="scores">
+    <div class="score">
+      <span class="label">当前分数</span>
+      <span class="value" id="score">0</span>
+    </div>
+    <div class="score">
+      <span class="label">最高分</span>
+      <span class="value" id="highScore">0</span>
+    </div>
+  </div>
+
+  <div class="stage">
+    <canvas id="board" width="400" height="400" aria-label="贪吃蛇棋盘"></canvas>
+    <!-- 提示层：开局提示、结束提示都显示在这里 -->
+    <div class="overlay" id="overlay">
+      <div class="title" id="overlayTitle">贪吃蛇</div>
+      <div class="sub" id="overlaySub">按方向键或 WASD 开始</div>
+    </div>
+  </div>
+
+  <p class="hint">
+    <kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> 或 <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 控制方向 ·
+    结束后按 <kbd>空格</kbd> 重新开始
+  </p>
+
+<script>
+'use strict';
+
+/* =====================================================================
+   1. 常量：棋盘尺寸、速度、存档键名、配色
+   ===================================================================== */
+
+const CELL = 20;                    // 每个格子的像素边长
+const GRID = 20;                    // 横向/纵向各有 20 个格子
+const SIZE = CELL * GRID;           // 画布逻辑尺寸 = 400（即 400×400 画布、20×20 格子）
+const STEP_MS = 120;                // 蛇每 120 毫秒前进一格
+const FOOD_POINTS = 10;             // 吃到一个食物加 10 分
+const HIGH_SCORE_KEY = 'snake.highScore';   // localStorage 里保存最高分用的键名
+
+// 四个方向对应的坐标增量
+const DIRS = {
+  up: { x: 0, y: -1 },
+  down: { x: 0, y: 1 },
+  left: { x: -1, y: 0 },
+  right: { x: 1, y: 0 }
+};
+
+// 按键 → 方向。优先按 e.code 判断（不受输入法/大写影响），再退回 e.key 判断
+const DIR_BY_CODE = {
+  ArrowUp: 'up', KeyW: 'up',
+  ArrowDown: 'down', KeyS: 'down',
+  ArrowLeft: 'left', KeyA: 'left',
+  ArrowRight: 'right', KeyD: 'right'
+};
+const DIR_BY_KEY = {
+  arrowup: 'up', w: 'up',
+  arrowdown: 'down', s: 'down',
+  arrowleft: 'left', a: 'left',
+  arrowright: 'right', d: 'right'
+};
+
+// 配色集中在这一处，方便统一调整
+const COLOR = {
+  cellA: '#131c28',                 // 深浅两种格子交替，拼出棋盘格
+  cellB: '#101825',
+  snake: '#4ade80',                 // 蛇身
+  head: '#a7f3d0',                  // 蛇头更亮一点，方便看清方向
+  eye: '#0b1220',
+  food: '#f87171',                  // 食物
+  foodShine: '#fecaca'
+};
+
+// 游戏所处的三种状态
+const READY = 'ready';              // 还没开始动
+const RUNNING = 'running';          // 正在玩
+const OVER = 'over';                // 已结束（撞墙或撞到自己）
+
+/* =====================================================================
+   2. 页面元素引用与高分屏适配
+   ===================================================================== */
+
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+const scoreText = document.getElementById('score');
+const highScoreText = document.getElementById('highScore');
+const overlay = document.getElementById('overlay');
+const overlayTitle = document.getElementById('overlayTitle');
+const overlaySub = document.getElementById('overlaySub');
+
+// 在高分屏（devicePixelRatio > 1）上把画布内部分辨率放大，避免画面发虚；
+// 显示尺寸仍由 CSS 固定在 400×400，逻辑坐标系也保持 400×400。
+const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+canvas.width = SIZE * dpr;
+canvas.height = SIZE * dpr;
+ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+/* =====================================================================
+   3. 最高分的读写（localStorage，关掉浏览器再打开还在）
+   ===================================================================== */
+
+// 读取最高分。个别浏览器在 file:// 下会禁用 localStorage，
+// 这里用 try/catch 兜底：读不到就当 0，本局内仍能在页面上显示最高分。
+function loadHighScore() {
+  try {
+    const saved = Number.parseInt(window.localStorage.getItem(HIGH_SCORE_KEY), 10);
+    return Number.isFinite(saved) && saved > 0 ? saved : 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
+// 写入最高分，同样兜底，避免隐私模式等场景下抛错打断游戏。
+function saveHighScore(value) {
+  try {
+    window.localStorage.setItem(HIGH_SCORE_KEY, String(value));
+  } catch (e) {
+    /* 存不了就算了，不影响本局继续玩 */
+  }
+}
+
+/* =====================================================================
+   4. 游戏状态
+   ===================================================================== */
+
+let state;              // 当前状态：READY / RUNNING / OVER
+let snake;              // 蛇身坐标数组，snake[0] 是蛇头
+let dir;                // 当前真正生效的移动方向
+let inputQueue;         // 待处理的转向队列，最多存 2 条，防止一次 tick 内被连按两次而直接掉头
+let food;               // 食物坐标；为 null 表示棋盘已被填满
+let score;              // 当前分数
+let highScore;          // 最高分
+let isNewRecord;        // 本局是否打破了最高分
+let lastStepAt;         // 上一次蛇前进的时间戳
+
+/* =====================================================================
+   5. 回合逻辑
+   ===================================================================== */
+
+// 开局 / 重开：蛇回到中间三格，朝右待命，分数清零（最高分保留）。
+function resetGame() {
+  snake = [
+    { x: 9, y: 10 },
+    { x: 8, y: 10 },
+    { x: 7, y: 10 }
+  ];
+  dir = DIRS.right;
+  inputQueue = [];
+  score = 0;
+  isNewRecord = false;
+  lastStepAt = 0;
+  spawnFood();
+  state = READY;
+  updateScoreText();
+  showOverlay('贪吃蛇', '按方向键或 WASD 开始');
+}
+
+// 让蛇开始移动（第一次按有效方向键、或按空格时调用）。
+function startGame() {
+  state = RUNNING;
+  lastStepAt = performance.now();
+  hideOverlay();
+}
+
+// 随机放一个食物：先列出所有空格子再随机挑一个，
+// 这样即使蛇很长也不会「随机到蛇身上」而卡住。
+function spawnFood() {
+  const taken = new Set(snake.map(function (p) { return p.x + ',' + p.y; }));
+  const free = [];
+  for (let y = 0; y < GRID; y++) {
+    for (let x = 0; x < GRID; x++) {
+      if (!taken.has(x + ',' + y)) free.push({ x: x, y: y });
+    }
+  }
+  if (free.length === 0) {
+    food = null;                    // 没有空格子了 = 棋盘填满
+    return;
+  }
+  food = free[Math.floor(Math.random() * free.length)];
+}
+
+// 处理一次按键转向。
+function turn(name) {
+  const next = DIRS[name];
+  // 判断依据是「队列里最后一个方向」，没有排队方向时用当前方向，
+  // 这样连按两下（例如向右时猛按左→上）也不会出现直接掉头。
+  const last = inputQueue.length > 0 ? inputQueue[inputQueue.length - 1] : dir;
+  const isReverse = next.x === -last.x && next.y === -last.y;
+
+  if (state === READY) {
+    // 还没开局时，按「掉头键」什么都不做，避免一开局就撞到自己尾巴。
+    if (isReverse) return;
+    startGame();
+  } else if (state !== RUNNING) {
+    return;                         // 已结束：方向键不生效，只能按空格重开
+  }
+
+  if (isReverse) return;            // 不允许直接掉头：往左走时按右不算
+  if (next.x === last.x && next.y === last.y) return;   // 同方向不入队，省得队列被无用按键占满
+  if (inputQueue.length < 2) inputQueue.push(next);
+}
+
+// 蛇前进一步：先判撞墙、再判撞自己，最后移动身体并处理吃食物。
+function step() {
+  // 1) 先把队列里排队方向的第一个方向变成生效方向
+  if (inputQueue.length > 0) dir = inputQueue.shift();
+
+  const head = snake[0];
+  const next = { x: head.x + dir.x, y: head.y + dir.y };
+
+  // 2) 撞墙判定
+  if (next.x < 0 || next.x >= GRID || next.y < 0 || next.y >= GRID) {
+    return endGame('游戏结束', '撞墙了 · 按空格重新开始');
+  }
+
+  // 3) 是否吃到食物
+  const eating = food !== null && next.x === food.x && next.y === food.y;
+
+  // 4) 撞自己判定：不吃食物时蛇尾会往前挪一格，所以尾巴那一格可以让过去；
+  //    吃食物时身体不变短，整条蛇身都不能撞。
+  const limit = eating ? snake.length : snake.length - 1;
+  for (let i = 0; i < limit; i++) {
+    if (snake[i].x === next.x && snake[i].y === next.y) {
+      return endGame('游戏结束', '撞到自己了 · 按空格重新开始');
+    }
+  }
+
+  // 5) 移动：蛇头插入新格子；没吃到食物就剪掉蛇尾，等于身体变短一格
+  snake.unshift(next);
+  if (!eating) {
+    snake.pop();
+    return;
+  }
+
+  // 6) 吃到食物：加分、更新最高分、蛇身自然长一格，然后重新放食物
+  score += FOOD_POINTS;
+  if (score > highScore) {
+    highScore = score;
+    isNewRecord = true;
+    saveHighScore(highScore);
+  }
+  updateScoreText();
+  spawnFood();
+  if (food === null) endGame('你赢了', '棋盘已被填满 · 按空格重新开始');
+}
+
+// 结束游戏：定格画面并显示提示层。
+function endGame(title, sub) {
+  state = OVER;
+  showOverlay(title, isNewRecord ? '新纪录！' + sub : sub);
+}
+
+/* =====================================================================
+   6. 界面刷新
+   ===================================================================== */
+
+// 刷新顶部「当前分数 / 最高分」的文字。
+function updateScoreText() {
+  scoreText.textContent = String(score);
+  highScoreText.textContent = String(highScore);
+}
+
+function showOverlay(title, sub) {
+  overlayTitle.textContent = title;
+  overlaySub.textContent = sub;
+  overlay.hidden = false;
+}
+
+function hideOverlay() {
+  overlay.hidden = true;
+}
+
+// 画一个圆角矩形路径（自己实现，避免依赖较新的 ctx.roundRect）。
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+// 把当前局面画到画布上。
+function draw(now) {
+  // 6.1 棋盘格背景
+  for (let y = 0; y < GRID; y++) {
+    for (let x = 0; x < GRID; x++) {
+      ctx.fillStyle = (x + y) % 2 === 0 ? COLOR.cellA : COLOR.cellB;
+      ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+    }
+  }
+
+  // 6.2 食物：一个会轻微呼吸缩放的圆点
+  if (food !== null) {
+    const pulse = state === RUNNING ? Math.sin(now / 200) * 1.2 : 0;
+    const cx = food.x * CELL + CELL / 2;
+    const cy = food.y * CELL + CELL / 2;
+    ctx.fillStyle = COLOR.food;
+    ctx.beginPath();
+    ctx.arc(cx, cy, CELL / 2 - 3 + pulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = COLOR.foodShine;
+    ctx.beginPath();
+    ctx.arc(cx - 2.5, cy - 2.5, 1.8, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 6.3 蛇：身体从蛇头到蛇尾依次变暗，蛇头单独用亮色并画两只眼睛
+  for (let i = snake.length - 1; i >= 0; i--) {
+    const p = snake[i];
+    const fade = 1 - Math.min(0.45, i / Math.max(12, snake.length) * 0.5);
+    ctx.fillStyle = i === 0 ? COLOR.head : COLOR.snake;
+    ctx.globalAlpha = i === 0 ? 1 : fade;
+    roundRect(p.x * CELL + 1.5, p.y * CELL + 1.5, CELL - 3, CELL - 3, 5);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // 6.4 眼睛位置随当前方向变化，方便玩家看清蛇往哪走
+  const h = snake[0];
+  const cx = h.x * CELL + CELL / 2;
+  const cy = h.y * CELL + CELL / 2;
+  const along = 4;    // 眼睛沿前进方向的偏移
+  const side = 3.5;   // 眼睛垂直于前进方向的偏移
+  ctx.fillStyle = COLOR.eye;
+  ctx.beginPath();
+  ctx.arc(cx + dir.x * along + (dir.x === 0 ? side : 0),
+          cy + dir.y * along + (dir.y === 0 ? side : 0), 2, 0, Math.PI * 2);
+  ctx.arc(cx + dir.x * along - (dir.x === 0 ? side : 0),
+          cy + dir.y * along - (dir.y === 0 ? side : 0), 2, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+/* =====================================================================
+   7. 主循环：用 requestAnimationFrame 驱动，按固定步长推进蛇
+   ===================================================================== */
+
+let accum = 0;        // 距离上一次前进还差多少时间
+
+function loop(now) {
+  if (state === RUNNING) {
+    // 累计经过的时间，够一个步长就走一格；这样速度稳定，不受帧率波动影响。
+    accum += Math.min(100, now - lastStepAt);   // 切到别的标签页时时间会跳一大截，这里夹住
+    lastStepAt = now;
+    while (accum >= STEP_MS) {
+      accum -= STEP_MS;
+      step();
+      if (state !== RUNNING) { accum = 0; break; }   // 这一步里已经结束了就停止推进
+    }
+  }
+  draw(now);
+  requestAnimationFrame(loop);
+}
+
+/* =====================================================================
+   8. 键盘事件
+   ===================================================================== */
+
+window.addEventListener('keydown', function (e) {
+  // 带 Ctrl / Cmd / Alt 的组合键交给浏览器，不抢。
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.repeat) return;             // 长按不算连按，忽略自动重复
+
+  const name = DIR_BY_CODE[e.code] || DIR_BY_KEY[String(e.key || '').toLowerCase()];
+  if (name) {
+    e.preventDefault();             // 阻止方向键滚动页面
+    turn(name);
+    return;
+  }
+
+  // 空格：没开始时开始，结束后重新开始。
+  if (e.code === 'Space' || e.key === ' ') {
+    e.preventDefault();             // 阻止空格滚动页面 / 触发按钮
+    if (state === OVER) {
+      resetGame();
+      startGame();
+    } else if (state === READY) {
+      startGame();
+    }
+  }
+});
+
+/* =====================================================================
+   9. 启动：读最高分 → 摆好开局局面 → 进入主循环
+   ===================================================================== */
+
+highScore = loadHighScore();
+resetGame();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

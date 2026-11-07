@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>手气转盘 · 帮我决定</title>
+<style>
+/* ============================================================
+   样式：全部写在这里，不引用任何外部 CSS / 字体 / 图片。
+   ============================================================ */
+:root {
+  --bg: #f3f5f9;
+  --card: #ffffff;
+  --ink: #26303b;
+  --muted: #6b7787;
+  --line: #dfe4ec;
+  --accent: #2f6fed;
+  --warn: #b35c00;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 24px 16px 48px;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+}
+.wrap { max-width: 1060px; margin: 0 auto; }
+h1 { font-size: 22px; margin: 0 0 4px; }
+.sub { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
+
+/* 三块面板：左边输入、中间转盘、右边结果；窄屏时自动换行堆叠 */
+.board {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  align-items: stretch;
+  justify-content: center;
+}
+.panel {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px;
+  box-shadow: 0 2px 10px rgba(31, 45, 61, .06);
+}
+.panel h2 { font-size: 15px; margin: 0 0 10px; }
+
+.side { flex: 1 1 250px; min-width: 240px; max-width: 320px; display: flex; flex-direction: column; }
+textarea {
+  flex: 1;
+  min-height: 260px;
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--ink);
+  background: #fbfcfe;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  resize: vertical;
+  font-family: inherit;
+}
+textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+textarea:disabled { background: #eef1f6; color: var(--muted); }
+
+.wheelCol { flex: 0 0 auto; width: min(420px, 100%); display: flex; flex-direction: column; align-items: center; }
+canvas { display: block; border-radius: 50%; }
+canvas.clickable { cursor: pointer; }
+
+.result { flex: 1 1 220px; min-width: 230px; max-width: 320px; display: flex; flex-direction: column; }
+/* 结果用大字显示；idle/warn 是提示状态，字号小一档 */
+.result .big {
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1.35;
+  word-break: break-word;
+  margin: 4px 0 14px;
+  min-height: 96px;
+}
+.result .big.idle { font-size: 18px; font-weight: 500; color: var(--muted); }
+.result .big.warn { font-size: 20px; color: var(--warn); }
+.tips { margin: auto 0 0; padding-top: 12px; color: var(--muted); font-size: 13px; line-height: 1.7; }
+
+.row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+button {
+  appearance: none;
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 16px;
+  font-size: 15px;
+  cursor: pointer;
+  background: #e9edf4;
+  color: var(--ink);
+  font-family: inherit;
+}
+button:hover:not(:disabled) { filter: brightness(.96); }
+button.primary { background: var(--accent); color: #fff; font-weight: 600; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+.count { margin-top: 12px; color: var(--muted); font-size: 13px; min-height: 18px; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>手气转盘</h1>
+  <p class="sub">吃什么、谁去做，交给运气。单文件、离线可用，选项只存在你自己电脑的浏览器里。</p>
+
+  <div class="board">
+    <!-- 左侧：多行输入框，一行一个选项 -->
+    <section class="panel side">
+      <h2>选项（一行一个）</h2>
+      <textarea id="options" spellcheck="false" autocomplete="off"
+        placeholder="麻辣烫&#10;螺蛳粉&#10;日式拉面"></textarea>
+      <div class="row">
+        <button id="loadSample" type="button">载入示例</button>
+      </div>
+      <div class="count" id="count"></div>
+    </section>
+
+    <!-- 中间：转盘本体（用 canvas 画），顶部一个固定指针 -->
+    <section class="panel wheelCol">
+      <canvas id="wheel" title="也可以直接点转盘"></canvas>
+      <div class="row">
+        <button id="spin" class="primary" type="button">转起来</button>
+      </div>
+    </section>
+
+    <!-- 右侧：结果大字显示 + 再来一次 -->
+    <section class="panel result">
+      <h2>结果</h2>
+      <div class="big idle" id="result">还没开始转</div>
+      <div class="row">
+        <button id="again" type="button">再来一次</button>
+      </div>
+      <p class="tips" id="tips"></p>
+    </section>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   手气转盘逻辑，分四块：
+   1) 读写选项（含 localStorage 保存）
+   2) 用 canvas 画转盘（均分扇形 + 沿半径写字 + 固定指针）
+   3) 旋转动画（3～5 秒减速，停在随机角度）
+   4) 判断指针指向哪个扇形，显示结果
+   ============================================================ */
+
+/* ---------- 常量 ---------- */
+var STORAGE_KEY = "dylan-toys.wheel.options.v1"; // localStorage 的键
+var TAU = Math.PI * 2;
+var START_ANGLE = -Math.PI / 2; // 第一个扇形从正上方开始，顺时针排开
+var MAX_SIZE = 388;             // 转盘最大边长（CSS 像素）
+var MIN_SIZE = 240;             // 窄屏时的最小边长
+var RIM = 10;                   // 画布四周留白，给外圈和指针用
+var HUB_RATIO = 0.16;           // 中心圆盘半径占转盘半径的比例
+var LABEL_PAD = 12;             // 文字离外圈的间距
+
+/* 6 个示例选项，点「载入示例」一键填入 */
+var SAMPLE = ["楼下麻辣烫", "楼上的螺蛳粉", "日式拉面", "牛肉盖饭", "番茄鸡蛋面", "轻食沙拉"];
+
+/* ---------- 页面元素 ---------- */
+var ta = document.getElementById("options");
+var countEl = document.getElementById("count");
+var resultEl = document.getElementById("result");
+var tipsEl = document.getElementById("tips");
+var spinBtn = document.getElementById("spin");
+var againBtn = document.getElementById("again");
+var sampleBtn = document.getElementById("loadSample");
+var canvas = document.getElementById("wheel");
+var ctx = canvas.getContext("2d");
+
+/* ---------- 运行时状态 ---------- */
+var options = [];     // 当前有效选项（已去空行、去首尾空格）
+var rotation = 0;     // 转盘当前角度（弧度，顺时针为正）
+var winner = -1;      // 需要高亮的中奖扇形下标，-1 表示没有
+var spinning = false; // 是否正在转
+var hasResult = false;// 结果区当前显示的是一次真实结果，还是提示语
+var size = MAX_SIZE;  // 当前实际绘制边长
+var storageOK = true; // 浏览器是否允许用 localStorage
+
+/* ============================================================
+   1) 读写选项
+   ============================================================ */
+
+/* localStorage 在个别浏览器（或隐私模式）里会抛异常，
+   这里统一包一层：存不了就降级成「本次打开期间可用」，不报错。 */
+function loadSaved() {
+  try {
+    return window.localStorage.getItem(STORAGE_KEY);
+  } catch (e) {
+    storageOK = false;
+    return null;
+  }
+}
+function saveText(text) {
+  try {
+    window.localStorage.setItem(STORAGE_KEY, text);
+    return true;
+  } catch (e) {
+    storageOK = false;
+    return false;
+  }
+}
+
+/* 把输入框内容拆成选项数组：支持 Windows/Mac 换行，忽略空行和首尾空格。
+   重复的选项会保留（有人就是想让某个选项多几次机会）。 */
+function readOptions() {
+  var lines = ta.value.split(/\r?\n/);
+  var out = [];
+  for (var i = 0; i < lines.length; i++) {
+    var s = lines[i].trim();
+    if (s) out.push(s);
+  }
+  return out;
+}
+
+/* 输入框内容变化后统一走这里：重算选项、存起来、重画转盘 */
+function syncFromInput() {
+  options = readOptions();
+  saveText(ta.value);
+  if (hasResult) {
+    // 选项改了，之前那次结果就作废了，提示一下而不是留着旧答案
+    setNote("选项改了，重新转一次");
+  }
+  winner = -1;
+  updateCount();
+  draw();
+}
+
+/* 输入框下方的提示行：空列表、只剩一个选项都在这里给出友好提示 */
+function updateCount() {
+  var n = options.length;
+  if (n === 0) {
+    countEl.textContent = "还没有选项：左边一行写一个，或点「载入示例」先试 6 个。";
+  } else if (n === 1) {
+    countEl.textContent = "只有 1 个选项，转了也是它——再多写几行更好玩。";
+  } else {
+    countEl.textContent = "共 " + n + " 个选项，每人/每样机会均等。";
+  }
+}
+
+/* ============================================================
+   2) 画转盘
+   ============================================================ */
+
+/* 扇形配色：按黄金角（约 137.5°）散布色相，
+   这样相邻扇形色差永远够大，选项再多也不会看着撞色；深浅再交替一档。 */
+function sectorColor(i) {
+  var hue = (i * 137.508 + 8) % 360;
+  var light = 68 - (i % 2) * 8;
+  return "hsl(" + hue.toFixed(1) + ", 62%, " + light + "%)";
+}
+
+/* 拼 canvas 用的字体串，跟页面用同一套系统字体 */
+function font(px, weight) {
+  return (weight || 600) + " " + Math.round(px) +
+    'px -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif';
+}
+
+/* 按当前面板宽度定画布大小，并按屏幕像素比放大绘制，避免高分屏发虚 */
+function resizeCanvas() {
+  var host = canvas.parentElement;
+  var avail = (host.clientWidth || (MAX_SIZE + 32)) - 32; // 减去面板内边距
+  size = Math.max(MIN_SIZE, Math.min(MAX_SIZE, avail));
+  var dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+  canvas.style.width = size + "px";
+  canvas.style.height = size + "px";
+  canvas.width = Math.round(size * dpr);
+  canvas.height = Math.round(size * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // 之后一律按 CSS 像素画
+  draw();
+}
+
+/* 主绘制：外圈 → 扇形 → 扇形文字 → 中心圆盘 → 固定指针 */
+function draw() {
+  var c = size / 2;
+  var R = c - RIM; // 扇形半径
+
+  ctx.clearRect(0, 0, size, size);
+
+  // 外圈底环，让转盘边缘看着有个厚边
+  ctx.beginPath();
+  ctx.arc(c, c, R + 5, 0, TAU);
+  ctx.fillStyle = "#2f3a48";
+  ctx.fill();
+
+  // 空列表：画个虚线灰圈 + 友好提示，不报错
+  if (options.length === 0) {
+    drawEmpty(c, R);
+    drawPointer(c, R);
+    return;
+  }
+
+  var n = options.length;
+  var sec = TAU / n; // 每个扇形的圆心角：按数量均分
+
+  ctx.save();
+  ctx.translate(c, c);
+  ctx.rotate(rotation); // 整张转盘跟着 rotation 转
+
+  for (var i = 0; i < n; i++) {
+    var a0 = START_ANGLE + i * sec;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.arc(0, 0, R, a0, a0 + sec);
+    ctx.closePath();
+    ctx.fillStyle = sectorColor(i);
+    ctx.fill();
+    if (i === winner) { // 中奖的那块蒙一层白光
+      ctx.fillStyle = "rgba(255,255,255,.3)";
+      ctx.fill();
+    }
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(255,255,255,.85)";
+    ctx.stroke();
+  }
+
+  // 文字单独一轮再画，免得后面的扇形盖住前面的字
+  for (i = 0; i < n; i++) {
+    // 只剩一个选项时它铺满整圆，角平分线会指向下方，特意掰到正上方对着指针
+    var mid = n === 1 ? START_ANGLE : START_ANGLE + (i + 0.5) * sec;
+    drawLabel(options[i], mid, sec, R);
+  }
+
+  ctx.restore();
+
+  drawHub(c, R);
+  drawPointer(c, R);
+}
+
+/* 空列表时的占位画面 */
+function drawEmpty(c, R) {
+  ctx.save();
+  ctx.setLineDash([8, 8]);
+  ctx.beginPath();
+  ctx.arc(c, c, R, 0, TAU);
+  ctx.fillStyle = "#eef1f6";
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "#b9c2d0";
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.fillStyle = "#8d99a8";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = font(Math.max(15, R * 0.12), 600);
+  ctx.fillText("还没有选项", c, c - R * 0.08);
+  ctx.font = font(Math.max(12, R * 0.085), 400);
+  ctx.fillText("点「载入示例」或自己写几行", c, c + R * 0.14);
+}
+
+/* 中心圆盘，盖住所有文字指向圆心的那一头 */
+function drawHub(c, R) {
+  var r = Math.max(18, R * HUB_RATIO);
+  ctx.beginPath();
+  ctx.arc(c, c, r, 0, TAU);
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = "#2f3a48";
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(c, c, Math.max(4, r * 0.28), 0, TAU);
+  ctx.fillStyle = "#2f3a48";
+  ctx.fill();
+}
+
+/* 顶部固定指针：不跟着转盘转，尖端伸进扇形里 */
+function drawPointer(c, R) {
+  var top = c - R - RIM; // 画布顶端附近
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(c, top + 26);
+  ctx.lineTo(c - 11, top - 3);
+  ctx.lineTo(c + 11, top - 3);
+  ctx.closePath();
+  ctx.fillStyle = "#e5484d";
+  ctx.shadowColor = "rgba(0,0,0,.3)";
+  ctx.shadowBlur = 4;
+  ctx.shadowOffsetY = 1;
+  ctx.fill();
+  ctx.restore();
+}
+
+/* 沿半径写选项文字：从外圈往里写，
+   放不下就先整体缩小字号，还是放不下就截断加省略号，保证不出界。 */
+function drawLabel(text, midAngle, sec, R) {
+  var hubR = Math.max(18, R * HUB_RATIO);
+  var maxLen = R - LABEL_PAD - hubR - 4;        // 可用的径向长度
+  var thickness = sec * R * 0.62;               // 扇形中部的弧厚，决定字号上限
+  var sizePx = Math.max(9, Math.min(21, thickness * 0.42));
+  var minPx = 9;
+
+  ctx.font = font(sizePx);
+  while (sizePx > minPx && ctx.measureText(text).width > maxLen) {
+    sizePx -= 1;                                // 一号一号往下试
+    ctx.font = font(sizePx);
+  }
+  var shown = text;
+  if (ctx.measureText(shown).width > maxLen) {
+    shown = clipText(shown, maxLen);            // 最小字号还放不下就截断
+  }
+
+  ctx.save();
+  ctx.rotate(midAngle);                         // 转到该扇形的角平分线方向
+  // 朝左的那一半扇形，文字整段转 180° 再从外圈往里写，
+  // 否则字是倒着的、得歪着头看。
+  var flip = Math.cos(midAngle) < 0;
+  if (flip) ctx.rotate(Math.PI);
+  ctx.textAlign = flip ? "left" : "right";      // 右端贴外圈，文字沿半径朝内
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#22303d";
+  ctx.shadowColor = "rgba(255,255,255,.6)";     // 一点描边感，深色块上也看得清
+  ctx.shadowBlur = 2;
+  ctx.fillText(shown, flip ? -(R - LABEL_PAD) : (R - LABEL_PAD), 0);
+  ctx.restore();
+}
+
+/* 逐字裁短，直到「文字+省略号」能塞进 maxLen */
+function clipText(text, maxLen) {
+  var s = text;
+  while (s.length > 1 && ctx.measureText(s + "…").width > maxLen) {
+    s = s.slice(0, -1);
+  }
+  return s + "…";
+}
+
+/* ============================================================
+   3) 旋转动画 + 4) 判定结果
+   ============================================================ */
+
+/* 指针固定在正上方（画布坐标 -90°）。转盘整体转了 rotation，
+   所以「指针方向的屏幕角 - rotation」就是转盘自己坐标系里的角度，
+   再减去起始角、除以每块的角度，就得到指针压在哪个扇形上。 */
+function winnerIndex(rot, n) {
+  var sec = TAU / n;
+  var a = (-Math.PI / 2) - rot - START_ANGLE;
+  a = ((a % TAU) + TAU) % TAU;                  // 归一化到 [0, 2π)
+  return Math.floor(a / sec) % n;
+}
+
+function setBusy(busy) {
+  // 转的过程中锁住输入和按钮，免得中途改选项把结果算错
+  spinning = busy;
+  spinBtn.disabled = busy;
+  againBtn.disabled = busy;
+  sampleBtn.disabled = busy;
+  ta.disabled = busy;
+  canvas.classList.toggle("clickable", !busy);
+}
+
+function setResult(text) {
+  resultEl.textContent = text;
+  resultEl.className = "big";
+  hasResult = true;
+}
+function setNote(text) {
+  resultEl.textContent = text;
+  resultEl.className = "big idle";
+  hasResult = false;
+}
+function setWarn(text) {
+  resultEl.textContent = text;
+  resultEl.className = "big warn";
+  hasResult = false;
+}
+
+function spin() {
+  if (spinning) return;
+
+  // 空列表：只给提示，不转也不报错
+  if (options.length === 0) {
+    setWarn("还没写选项，转不了");
+    countEl.textContent = "左边一行写一个选项，或点「载入示例」先来 6 个。";
+    return;
+  }
+
+  var onlyOne = options.length === 1;
+  setBusy(true);
+  winner = -1;
+  setNote("转出结果中…");
+
+  var duration = 3000 + Math.random() * 2000;     // 3～5 秒
+  var turns = 4 + Math.floor(Math.random() * 4);  // 多转 4～7 圈，像真转盘
+  var from = rotation;
+  // 整圈之外再加一个随机角，落点在圆周上均匀分布
+  var delta = turns * TAU + Math.random() * TAU;
+  var t0 = null;
+
+  function frame(now) {
+    if (t0 === null) t0 = now;
+    var p = Math.min(1, (now - t0) / duration);
+    var eased = 1 - Math.pow(1 - p, 3);           // easeOutCubic：结尾慢慢减速
+    rotation = from + delta * eased;
+    draw();
+    if (p < 1) {
+      window.requestAnimationFrame(frame);
+      return;
+    }
+    rotation = (from + delta) % TAU;
+    // 用最终角度反查指针下的扇形，动画和结果永远一致
+    winner = winnerIndex(rotation, options.length);
+    draw();
+    setResult(options[winner]);
+    setBusy(false);
+    updateCount();
+    if (onlyOne) {
+      countEl.textContent = "只有 1 个选项，结果肯定是它——多写几行才有悬念。";
+    }
+  }
+
+  window.requestAnimationFrame(frame);
+}
+
+/* ============================================================
+   事件绑定与启动
+   ============================================================ */
+
+sampleBtn.addEventListener("click", function () {
+  ta.value = SAMPLE.join("\n");
+  syncFromInput();
+  setNote("示例已载入，点「转起来」");
+});
+
+// 改输入框：立刻重画转盘并保存
+ta.addEventListener("input", syncFromInput);
+
+spinBtn.addEventListener("click", spin);
+againBtn.addEventListener("click", spin);
+canvas.addEventListener("click", spin); // 嫌按钮远的话，直接点转盘也行
+window.addEventListener("resize", resizeCanvas);
+
+(function init() {
+  var saved = loadSaved();
+  if (saved !== null) ta.value = saved; // 上次写的选项还在（刷新不丢）
+  options = readOptions();
+
+  tipsEl.textContent = storageOK
+    ? "选项存在这台电脑的浏览器里，下次打开还在；换电脑就互不相干了。"
+    : "这个浏览器不允许保存数据，刷新后选项会丢，只能当场用。";
+
+  updateCount();
+  resizeCanvas(); // 里面会画第一帧
+})();
+</script>
+</body>
+</html>

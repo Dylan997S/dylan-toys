@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>25:00 - 工作</title>
+<style>
+  /* ========== 主题变量：工作/休息两种强调色 ========== */
+  :root {
+    --bg: #0f1218;
+    --card: #171b24;
+    --line: #262c39;
+    --text: #e8ecf3;
+    --muted: #8b94a6;
+    --accent: #ff7a59;              /* 工作：暖橙 */
+    --accent-soft: rgba(255, 122, 89, .14);
+  }
+  body[data-mode="break"] {
+    --accent: #35c39a;              /* 休息：青绿 */
+    --accent-soft: rgba(53, 195, 154, .14);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    display: grid;
+    place-items: center;
+    background: radial-gradient(120% 120% at 50% 0%, #161b25 0%, var(--bg) 62%);
+    color: var(--text);
+    /* 只用系统字体，不下载任何外部资源 */
+    font: 15px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+  }
+
+  .card {
+    width: min(344px, 92vw);
+    padding: 24px 24px 20px;
+    border: 1px solid var(--line);
+    border-radius: 20px;
+    background: var(--card);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, .45);
+    text-align: center;
+  }
+
+  /* ========== 模式切换 ========== */
+  .modes { display: flex; gap: 8px; }
+  .mode {
+    flex: 1;
+    padding: 8px 0;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .mode:hover { color: var(--text); }
+  .mode[aria-pressed="true"] {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--text);
+  }
+
+  /* ========== 进度环 + 中间的时间 ========== */
+  .ringWrap { position: relative; width: 232px; margin: 18px auto 6px; }
+  .ring { display: block; width: 100%; height: auto; }
+  .ring circle { fill: none; stroke-width: 14; }
+  .ring .track { stroke: var(--line); }
+  .ring .bar {
+    stroke: var(--accent);
+    stroke-linecap: round;
+    /* 环从 12 点方向开始，逆时针转 90° 后起点正好在正上方 */
+    transform: rotate(-90deg);
+    transform-origin: 50% 50%;
+    /* 心跳每 200ms 更新一次，用线性过渡把它抹成连续的运动 */
+    transition: stroke-dashoffset .2s linear, stroke .25s ease;
+  }
+  .center {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+  }
+  .time {
+    font-size: 46px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    font-variant-numeric: tabular-nums;   /* 等宽数字，跳秒时不抖 */
+  }
+  .state { font-size: 13px; color: var(--muted); }
+  .state.done { color: var(--accent); font-weight: 600; }
+
+  /* ========== 三个按钮 ========== */
+  .controls { display: flex; gap: 10px; margin-top: 14px; }
+  .controls button {
+    flex: 1;
+    padding: 10px 0;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #1e232e;
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+  }
+  .controls button:hover:not(:disabled) { border-color: var(--muted); }
+  .controls #start { background: var(--accent); border-color: var(--accent); color: #14171d; font-weight: 600; }
+  .controls button:disabled { opacity: .38; cursor: default; }
+  .controls button:focus-visible, .mode:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ========== 今日完成数 + 提示 ========== */
+  .today { margin: 16px 0 0; font-size: 14px; color: var(--muted); }
+  .today b { color: var(--accent); font-variant-numeric: tabular-nums; }
+  .hint { margin: 6px 0 0; font-size: 12px; color: #626b7c; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ring .bar { transition: none; }
+  }
+</style>
+</head>
+<body data-mode="work">
+
+<main class="card">
+
+  <div class="modes" role="group" aria-label="选择模式">
+    <button type="button" class="mode" id="btnWork" aria-pressed="true">工作 25 分钟</button>
+    <button type="button" class="mode" id="btnBreak" aria-pressed="false">休息 5 分钟</button>
+  </div>
+
+  <div class="ringWrap">
+    <!-- 进度环是纯 SVG 画的，没有用任何图片 -->
+    <svg class="ring" viewBox="0 0 240 240" aria-hidden="true" focusable="false">
+      <circle class="track" cx="120" cy="120" r="104"></circle>
+      <circle class="bar" id="ringBar" cx="120" cy="120" r="104"></circle>
+    </svg>
+    <div class="center">
+      <div class="time" id="time" role="timer">25:00</div>
+      <div class="state" id="state">未开始</div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button type="button" id="start">开始</button>
+    <button type="button" id="pause" disabled>暂停</button>
+    <button type="button" id="reset">重置</button>
+  </div>
+
+  <p class="today" id="today">今天已完成 <b>0</b> 个</p>
+  <p class="hint">切到别的标签页也不会走时不准；到点会「叮」一声。</p>
+
+</main>
+
+<script>
+'use strict';
+
+/* =====================================================================
+   番茄钟：全部逻辑都在这一个文件里，不联网、不引外部资源。
+
+   计时思路（重点）：
+   页面只记住「这次倒计时会在哪一刻结束」（endAt，一个 Date.now() 的时间戳），
+   界面上的剩余时间每次都是现算的 remaining = endAt - Date.now()。
+   所以浏览器在后台标签页里把定时器降频、或者电脑休眠一会儿，都不会让时间走偏——
+   回到页面时只是「重新读了一次真实时间」，不存在每秒累加造成的误差。
+   ===================================================================== */
+
+/* ---------- 模式与时长 ---------- */
+const MODES = {
+  work:  { label: '工作', ms: 25 * 60 * 1000 },
+  break: { label: '休息', ms:  5 * 60 * 1000 },
+};
+
+/* ---------- 本地存储：按日期记完成次数 ---------- */
+const STORAGE_KEY = '***';   // 内容形如 {"2026-11-08": 3, "2026-11-07": 6}
+let storageWorks = true;                        // file:// 下浏览器可能禁写 localStorage，退化成只记在当前页面
+let counts = readCounts();
+
+/* ---------- 运行状态 ---------- */
+let mode = 'work';        // 当前模式
+let running = false;      // 是否正在计时
+let finished = false;     // 是否处于「时间到！」状态
+let endAt = 0;            // 结束时刻（真实时间戳），只在 running 时有意义
+let remaining = MODES.work.ms;  // 暂停或没开始时，保存「还剩多少毫秒」
+let heartbeat = 0;        // 界面刷新的定时器 id
+let audioCtx = null;      // 复用同一个 AudioContext
+
+/* ---------- 拿到页面上的元素 ---------- */
+const el = {
+  body:    document.body,
+  time:    document.getElementById('time'),
+  state:   document.getElementById('state'),
+  ring:    document.getElementById('ringBar'),
+  start:   document.getElementById('start'),
+  pause:   document.getElementById('pause'),
+  reset:   document.getElementById('reset'),
+  work:    document.getElementById('btnWork'),
+  break:   document.getElementById('btnBreak'),
+  today:   document.getElementById('today'),
+};
+
+/* 进度环的周长：由半径算出来，用来把「剩余比例」换算成虚线偏移 */
+const RADIUS = Number(el.ring.r.baseVal.value);
+const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
+el.ring.style.strokeDasharray = String(CIRCUMFERENCE);
+
+/* =====================================================================
+   完成次数：读写 localStorage
+   ===================================================================== */
+
+/** 读完成记录：存储被禁用和记录内容坏了是两回事，只有前者才提示用户 */
+function readCounts() {
+  let raw = null;
+  try {
+    raw = localStorage.getItem(STORAGE_KEY);
+  } catch (err) {
+    storageWorks = false;     // 浏览器不让用 localStorage（个别 file:// 设置下会发生）
+    return {};
+  }
+  try {
+    const obj = raw ? JSON.parse(raw) : null;
+    return (obj && typeof obj === 'object' && !Array.isArray(obj)) ? obj : {};
+  } catch (err) {
+    return {};                // 记录内容坏了：当成没记录，下次完成会把它覆盖掉
+  }
+}
+
+/** 写完成记录；写失败也不影响本页继续计数 */
+function saveCounts() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(counts));
+    storageWorks = true;
+  } catch (err) {
+    storageWorks = false;
+  }
+}
+
+/** 今天的日期键，例如 "2026-11-08"（按本地日期，不按 UTC） */
+function todayKey() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+
+/** 今天完成了几个 */
+function todayCount() {
+  return Number(counts[todayKey()]) || 0;
+}
+
+/** 一个完整的番茄钟跑完：只在工作模式下计数，然后落盘 */
+function countOnePomodoro() {
+  const key = todayKey();
+  counts[key] = todayCount() + 1;
+  saveCounts();
+}
+
+/* 界面当前显示的是哪一天的数字；跨午夜时要换到新的一天 */
+let shownDay = todayKey();
+
+/** 刷新「今天已完成 N 个」；页面一直开着跨过午夜时，自动换到新的一天 */
+function renderToday() {
+  const day = todayKey();
+  if (day !== shownDay) {
+    shownDay = day;
+    counts = readCounts();          // 换天了：重新读一次，别把昨天的数带过来
+  }
+  const note = storageWorks ? '' : '<br><span class="hint">（这个浏览器不允许页面存数据，只在本页有效）</span>';
+  el.today.innerHTML = '今天已完成 <b>' + todayCount() + '</b> 个' + note;
+}
+
+/* 别的标签页也改了完成次数时，同步过来 */
+window.addEventListener('storage', function () {
+  counts = readCounts();
+  renderToday();
+});
+
+/* =====================================================================
+   界面渲染
+   ===================================================================== */
+
+/** 毫秒 → "分:秒"，向上取整：刚开始显示 25:00，归零时正好显示 00:00 */
+function fmt(ms) {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
+
+/** 按当前状态重画时间、进度环、状态文字和标签页标题 */
+function render() {
+  const total = MODES[mode].ms;
+  const text = fmt(remaining);
+
+  el.time.textContent = text;
+
+  /* 进度环：剩余比例越小，藏起来的虚线越长，看到的弧就越短 */
+  const left = Math.max(0, Math.min(1, remaining / total));
+  el.ring.style.strokeDashoffset = String(CIRCUMFERENCE * (1 - left));
+
+  /* 状态文字 */
+  let label;
+  if (finished)        label = mode === 'work' ? '时间到！去休息一下吧' : '休息结束，回来干活';
+  else if (running)    label = mode === 'work' ? '专注中…' : '休息中…';
+  else if (remaining >= total) label = '未开始';
+  else                 label = '已暂停';
+  el.state.textContent = label;
+  el.state.classList.toggle('done', finished);
+
+  /* 按钮可用性：跑着的时候不能再点开始，没跑的时候不能点暂停 */
+  el.start.disabled = running;
+  el.pause.disabled = !running;
+
+  /* 标签页标题也显示剩余时间，例如「23:41 - 工作」；没在跑时前面加个暂停符号 */
+  document.title = finished
+    ? '时间到！'
+    : (running ? '' : '⏸ ') + text + ' - ' + MODES[mode].label;
+}
+
+/* =====================================================================
+   计时
+   ===================================================================== */
+
+function startLoop() {
+  stopLoop();
+  heartbeat = setInterval(tick, 200);   // 心跳只负责「刷新界面」，不负责「数时间」
+}
+
+function stopLoop() {
+  if (heartbeat) {
+    clearInterval(heartbeat);
+    heartbeat = 0;
+  }
+}
+
+/** 一次心跳：拿真实时间重算剩余时间，到点就收尾 */
+function tick() {
+  if (!running) return;
+  remaining = Math.max(0, endAt - Date.now());   // ← 剩余时间永远现算，不靠累加
+  render();
+  if (remaining === 0) finish();
+}
+
+/** 开始 / 继续 */
+function start() {
+  if (running) return;
+  if (finished) reset();                        // 「时间到」状态下再开始，就是重新来一个
+  if (remaining <= 0) remaining = MODES[mode].ms;
+
+  unlockAudio();                                // 浏览器要求音频必须在用户点击里解锁
+  endAt = Date.now() + remaining;               // 只记住「几点结束」
+  running = true;
+  startLoop();
+  render();
+}
+
+/** 暂停：把此刻还剩多少存下来，之后按原样续上 */
+function pause() {
+  if (!running) return;
+  remaining = Math.max(0, endAt - Date.now());
+  running = false;
+  stopLoop();
+  render();
+}
+
+/** 重置：回到当前模式的满时长 */
+function reset() {
+  running = false;
+  finished = false;
+  remaining = MODES[mode].ms;
+  stopLoop();
+  render();
+}
+
+/** 切换模式（会重置当前这一轮计时） */
+function setMode(next) {
+  if (next === mode) return;
+  mode = next;
+  el.body.dataset.mode = next;                  // CSS 变量跟着换强调色
+  el.work.setAttribute('aria-pressed', String(next === 'work'));
+  el.break.setAttribute('aria-pressed', String(next === 'break'));
+  reset();
+}
+
+/** 时间到：响铃 + 标题改成「时间到！」+ 工作模式记一次完成 */
+function finish() {
+  if (finished) return;
+  running = false;
+  finished = true;
+  remaining = 0;
+  stopLoop();
+  ding();                                       // Web Audio 现场合成的「叮」
+  if (mode === 'work') countOnePomodoro();
+  render();
+  renderToday();
+}
+
+/* =====================================================================
+   提示音：现场合成一声「叮」，不引任何音频文件
+   ===================================================================== */
+
+/** 在用户点击里创建/唤醒 AudioContext，否则浏览器会拦掉之后的自动播放 */
+function unlockAudio() {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return;
+  try {
+    if (!audioCtx) audioCtx = new Ctx();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  } catch (err) {
+    audioCtx = null;
+  }
+}
+
+/** 一个基频加两个泛音，配上「瞬间起来、慢慢衰减」的包络，听起来就是清脆的一声叮 */
+function ding() {
+  unlockAudio();
+  if (!audioCtx) return;                        // 没有 Web Audio 就安静地跳过
+  try {
+    const t0 = audioCtx.currentTime + 0.01;
+    const master = audioCtx.createGain();
+    master.gain.setValueAtTime(0.0001, t0);
+    master.gain.exponentialRampToValueAtTime(0.55, t0 + 0.012);  // 起音
+    master.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.4);  // 衰减
+    master.connect(audioCtx.destination);
+
+    [[880, 1], [1320, 0.32], [1760, 0.16]].forEach(function (part) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(part[0], t0);
+      gain.gain.value = part[1];
+      osc.connect(gain);
+      gain.connect(master);
+      osc.start(t0);
+      osc.stop(t0 + 1.5);
+    });
+  } catch (err) {
+    /* 音频出问题不影响计时本身 */
+  }
+}
+
+/* =====================================================================
+   事件绑定
+   ===================================================================== */
+
+el.start.addEventListener('click', start);
+el.pause.addEventListener('click', pause);
+el.reset.addEventListener('click', reset);
+el.work.addEventListener('click', function () { setMode('work'); });
+el.break.addEventListener('click', function () { setMode('break'); });
+
+/* 从别的标签页切回来时，立刻按真实时间重算一遍，界面不停在旧数字上 */
+document.addEventListener('visibilitychange', function () {
+  if (document.hidden) return;
+  if (running) tick();
+  renderToday();
+});
+
+/* ---------- 初始界面 ---------- */
+render();
+renderToday();
+</script>
+</body>
+</html>
